@@ -33,14 +33,14 @@ def pre_process(input, is_training,  scope='init_process'):
         return x
 
 
-def hourglass(input, n_deep=n_deep, n_res=n_res, n_dims=n_dims, is_training=True, scope='hourglass_5'):
+def hourglass(input, is_training, n_deep=n_deep, n_res=n_res, n_dims=n_dims, scope='hourglass_5'):
     """an implement of hourglass
     Args:
         input: tf tensor with the shape [bs, h, w, 3], default should be [bs, 511//4, 511//4, 3]
     Return:
         hourglass output tensor with the shape [bs, h, w, 3]
     """
-    input = pre_process(input, is_training=is_training)
+    input = pre_process(input, is_training=is_training) ## reduce the img size by 4 times.
 
     with tf.variable_scope(scope):
         curr_res = n_res[0]
@@ -53,8 +53,7 @@ def hourglass(input, n_deep=n_deep, n_res=n_res, n_dims=n_dims, is_training=True
         half = tf.nn.max_pool(input, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
         low_1 = res_block(half, next_dim, curr_res, is_training=is_training, scope='low_1')
         if n_deep > 1:
-            low_2 = hourglass(low_1, n_deep - 1, n_res[1:], n_dims[1:], is_training=is_training,
-                                   scope='hourglass_%d' % (n_deep - 1))
+            low_2 = hourglass(low_1, is_training, n_deep - 1, n_res[1:], n_dims[1:], scope='hourglass_%d' % (n_deep - 1))
         else:
             low_2 = res_block(low_1, next_dim, next_res, is_training=is_training, scope='low_2')
         low_3 = res_block(low_2, curr_dim, curr_res, is_training=is_training, scope='low_3')
@@ -64,7 +63,7 @@ def hourglass(input, n_deep=n_deep, n_res=n_res, n_dims=n_dims, is_training=True
         return merge
 
 
-def res_block(input, out_dim, n, k=3, is_training=True, scope='res_block'):
+def res_block(input, out_dim, n, is_training=True, scope='res_block'):
     """a res block for hourglass
     Args:
         input: input tensor
@@ -73,13 +72,13 @@ def res_block(input, out_dim, n, k=3, is_training=True, scope='res_block'):
     Return: output tensor
     """
     with tf.variable_scope(scope):
-        x = residual(input, out_dim, k=k, is_training=is_training, scope='residual_0')
+        x = residual(input, out_dim, is_training=is_training, scope='residual_0')
         for i in range(1, n):
-            x = residual(x, out_dim, k=k, is_training=is_training, scope='residual_%d' % i)
+            x = residual(x, out_dim, is_training=is_training, scope='residual_%d' % i)
         return x
 
 
-def residual(input, out_dim, k=3, strides=(1, 1), is_training=True, scope='residual'):
+def residual(input, out_dim, strides=(1, 1), is_training=True, scope='residual'):
     """a residual implement
     Args:
         input: input tensor
@@ -92,14 +91,14 @@ def residual(input, out_dim, k=3, strides=(1, 1), is_training=True, scope='resid
         x = conv_bn_re(input, out_dim, strides=strides, is_training=is_training, scope='up_1')
         x = conv_bn_re(x, out_dim, use_relu=False, is_training=is_training, scope='up_2')
         # skip,up layer 1*1
-        skip = conv_bn_re(input, out_dim, strides=strides, use_relu=False, k=1,
+        skip = conv_bn_re(input, out_dim, strides=strides, use_relu=False, kernel_size=1,
                                is_training=is_training, scope='low')
         # skip+x
         res = tf.nn.relu(tf.add(skip, x))
         return res
 
 
-def conv_bn_re(input, out_dim, strides=(1, 1), use_relu=True, use_bn=True, k=3, is_training=True,
+def conv_bn_re(input, out_dim, strides=(1, 1), use_relu=True, use_bn=True, kernel_size=3, is_training=True,
                scope='conv_bn_re'):
     """ a std conv and bn layer
     Args:
@@ -108,7 +107,7 @@ def conv_bn_re(input, out_dim, strides=(1, 1), use_relu=True, use_bn=True, k=3, 
     """
     with tf.variable_scope(scope):
         # x=tf.contrib.layers.conv2d(input,out_dim,k,stride=strides,activation_fn=None)
-        x = tf.layers.conv2d(input, out_dim, k, strides=strides, padding='same')
+        x = tf.layers.conv2d(input, out_dim, kernel_size, strides=strides, padding='same')
         if use_bn:
             x = tf.contrib.layers.batch_norm(x, is_training=is_training)
         if use_relu:
@@ -118,7 +117,7 @@ def conv_bn_re(input, out_dim, strides=(1, 1), use_relu=True, use_bn=True, k=3, 
 
 if __name__ == '__main__':
     input = tf.placeholder(shape=[None, 511, 511, 3], dtype=tf.float32)
-    feats = hourglass(input)
+    feats = hourglass(input, is_training=True)
     print('Total trainable parameters:%s' %
                 str(np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])))
     pass
