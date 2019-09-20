@@ -10,7 +10,7 @@ Author：Team Li
 import numpy as np
 import time, cv2, random
 
-def heat_map(img_size, points, sigma):
+def heat_map(img_size, points, sigmas):
     """produce a heat map(gray scale) according the points
     Args:
         img_size: img height and width
@@ -30,8 +30,8 @@ def heat_map(img_size, points, sigma):
     y = np.arange(0, img_size[0], 1)
     z = np.swapaxes(np.array(np.meshgrid(x, y)), axis1=0, axis2=2)
     z = np.swapaxes(z, axis1=0, axis2=1)
-    heat_map = np.array([gaussian_2d(z, point, sigma=sigma) for point in points])
-    heat_map = np.sum(heat_map, axis=0)
+    heat_map = np.array([gaussian_2d(z, point, sigma=sigma) for point, sigma in zip(points, sigmas)])
+    heat_map = np.max(heat_map, axis=0)
     return heat_map/np.max(heat_map)
 
 
@@ -50,6 +50,7 @@ def legal_points(img_size, points):
         if point[1] < 0 or point[1] > img_size[0]-1:
             return False
     return True
+
 
 def gaussian_2d(point, mu, sigma):
     """2d gaussion function
@@ -88,8 +89,10 @@ if __name__ == '__main__':
         y = np.random.randint(0, 127, 5)
         # print(x)
         # print(y)
-        aa = heat_map(img_size=(128, 128), points=[[x[0], y[0]], [x[1], y[1]], [x[2], y[2]], [x[3], y[3]], [x[4], y[4]]], sigma=2)
+        aa = heat_map(img_size=(128, 128), points=[[x[0], y[0]], [x[1], y[1]], [x[2], y[2]], [x[3], y[3]], [x[4], y[4]]], sigmas=[10, 8, 6, 5, 3])
         cv2.imshow('test', aa)
         cv2.waitKey()
         cv2.destroyAllWindows()
     print('totol time is ', round(time.time()-t0, 4)) ## 2630 FPS for one point
+
+    # print(np.logical_or(1.1, 0.1))
