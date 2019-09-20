@@ -19,6 +19,20 @@ n_deep = 5
 n_dims = [256, 256, 384, 384, 384, 512]
 n_res = [2, 2, 2, 2, 2, 4]
 
+
+def hourglass(input, is_training):
+    """ hourglass implement
+    Args:
+        input: input tensor
+        is_training: indicate whether train or test
+    Return:
+        hourglass output
+    """
+    input = pre_process(input, is_training=is_training)  ## reduce the img size by 4 times.
+    feats = sub_hourglass(input, is_training)
+    return feats
+
+
 def pre_process(input, is_training,  scope='init_process'):
     """a pre process convolution layer for raw input img, which be used to reduce img size by 4 times
     Args:
@@ -33,15 +47,13 @@ def pre_process(input, is_training,  scope='init_process'):
         return x
 
 
-def hourglass(input, is_training, n_deep=n_deep, n_res=n_res, n_dims=n_dims, scope='hourglass_5'):
+def sub_hourglass(input, is_training, n_deep=n_deep, n_res=n_res, n_dims=n_dims, scope='hourglass_5'):
     """an implement of hourglass
     Args:
         input: tf tensor with the shape [bs, h, w, 3], default should be [bs, 511//4, 511//4, 3]
     Return:
         hourglass output tensor with the shape [bs, h, w, 3]
     """
-    input = pre_process(input, is_training=is_training) ## reduce the img size by 4 times.
-
     with tf.variable_scope(scope):
         curr_res = n_res[0]
         next_res = n_res[1]
@@ -53,7 +65,7 @@ def hourglass(input, is_training, n_deep=n_deep, n_res=n_res, n_dims=n_dims, sco
         half = tf.nn.max_pool(input, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
         low_1 = res_block(half, next_dim, curr_res, is_training=is_training, scope='low_1')
         if n_deep > 1:
-            low_2 = hourglass(low_1, is_training, n_deep - 1, n_res[1:], n_dims[1:], scope='hourglass_%d' % (n_deep - 1))
+            low_2 = sub_hourglass(low_1, is_training, n_deep - 1, n_res[1:], n_dims[1:], scope='hourglass_%d' % (n_deep - 1))
         else:
             low_2 = res_block(low_1, next_dim, next_res, is_training=is_training, scope='low_2')
         low_3 = res_block(low_2, curr_dim, curr_res, is_training=is_training, scope='low_3')
