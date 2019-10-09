@@ -35,28 +35,24 @@ def heat_map(img_size, points, sigmas):
     heat_map = np.max(heat_map, axis=0)
     return heat_map/np.max(heat_map)
 
-def heat_map_tf(img_size, points, sigmas):
+
+def heat_map_tf(img_size, point, sigma):
     """produce a heat map(gray scale) according the points
     Args:
         img_size: img height and width
-        points: ndarray or list, represents the coordinate of points. (x, y)
+        point: tensor, represents the coordinate of points. (x, y)
         sigma: control the heap point range
     return:
         a heap map with the shape (h, w)
-    Example:
-        aa = heat_map(img_size=(224, 224), points=[[50, 50], [100, 100]], sigma=2)
-        cv2.imshow('test', aa)
-        cv2.waitKey()
-        cv2.destroyAllWindows()
     """
     x = np.arange(0, img_size[1], 1)
     y = np.arange(0, img_size[0], 1)
     z = tf.meshgrid(x, y)
     z = tf.stack(z, axis=-1)
-    # heat_map = tf.map_fn(fn=lambda point:gaussian_2d_tf(z, point, ))
-    heat_map = np.array([gaussian_2d(z, point, sigma=sigma) for point, sigma in zip(points, sigmas)])
-    heat_map = np.max(heat_map, axis=0)
-    return heat_map/np.max(heat_map)
+
+    heat_map = gaussian_2d_tf(z, point, sigma)
+
+    return heat_map/tf.reduce_max(heat_map)
 
 
 def legal_points(img_size, points):
@@ -105,27 +101,19 @@ def gaussian_2d(point, mu, sigma):
 def gaussian_2d_tf(point, mu, sigma):
     """2d gaussion function
     Args:
-        point: 2d point coordinate
-        mu: 2d mean value
+        point: 2d point coordinate, tf.int32 or int64
+        mu: 2d mean value, tf.int32 or int64
         sigma: the standard deviation in gaussian func
     Return:
         a img with the shape (h, w)
-    Example:
-        x = np.arange(0, 224, 1)
-        y = np.arange(0, 224, 1)
-        z = np.swapaxes(np.array(np.meshgrid(x, y)), axis1=0, axis2=2)
-
-        z = gauss_2d(z, mu=(100,100), sigma=2)
-        cv2.imshow('test', z)
-        cv2.waitKey()
-        cv2.destroyAllWindows()
     """
     h = point.shape[0]
     w = point.shape[1]
     point = tf.reshape(point, shape=[-1, 2])
-    score = tf.exp(-(tf.reduce_sum(tf.square(point - mu), axis=-1))/(2*sigma**2))
+    sigma = tf.cast(sigma, tf.float32)
+    score = tf.exp(-(tf.reduce_sum(tf.square(tf.cast(point, tf.float32) - tf.cast(mu, tf.float32)), axis=-1))/(2*sigma**2))
 
-    return np.reshape(score, newshape=[h, w])
+    return tf.reshape(score, shape=(h, w))
 
 
 if __name__ == '__main__':
@@ -147,6 +135,18 @@ if __name__ == '__main__':
 
     # print(np.logical_or(1.1, 0.1))
 
-    points = tf.placeholder(shape=[None, 2], dtype=tf.float32)
-    sigmas = tf.placeholder(shape=[None], dtype=tf.float32)
-    heat_map_tf((128, 128), points, sigmas)
+    point = tf.placeholder(shape=2, dtype=tf.float32)
+    sigma = tf.placeholder(shape=1, dtype=tf.float32)
+    aa = heat_map_tf((128, 128), point, sigma)
+
+    with tf.Session() as sess:
+        for i in range(100):
+            gg = np.array([10, 100])
+            hh = np.array([10])
+            aaa = sess.run(aa, feed_dict={point:gg, sigma: hh})
+            cv2.imshow('test', aaa)
+            cv2.waitKey()
+            cv2.destroyAllWindows()
+            pass
+
+    pass
