@@ -22,7 +22,7 @@ category_index_for_generate_label = {'vehicle': 0,
 
 std_size = (128, 128) ## h, w
 
-radius_scalar = 5
+radius_scalar = 6
 
 def read_one_sample(img_name, label_name):
     """read one sample
@@ -57,7 +57,7 @@ def read_one_sample(img_name, label_name):
             xmax = bbox.getElementsByTagName('xmax')[0].childNodes[0].data
             label = np.array([float(ymin), float(xmin), float(ymax), float(xmax)])
             labels.append((obj_type, label))
-    labels = np.stack(labels, axis=0)
+    # labels = np.stack(labels, axis=0)
     return img, labels
 
 def generate_hm(raw_img_size, labels):
@@ -160,7 +160,10 @@ for img_name in imgs:
     obj_points_c_hm = np.zeros((len(category_index_for_generate_label.values()), std_size[0], std_size[1]))
     for obj_type, corner_bbox in label_dict.items(): ## for each obj type, do
         obj_index = category_index_for_generate_label[obj_type]
-        tl_hm, tr_hm, bl_hm, br_hm, c_hm = generate_label(raw_img_size=(img_h, img_w), labels=np.array(corner_bbox))
+        tl_hm, tr_hm, bl_hm, br_hm, c_hm = generate_hm(raw_img_size=(img_h, img_w), labels=np.array(corner_bbox))
+        cv2.imshow('test', tl_hm)
+        cv2.waitKey()
+        cv2.destroyAllWindows()
         obj_points_tl_hm[obj_index] = tl_hm
         obj_points_tr_hm[obj_index] = tr_hm
         obj_points_bl_hm[obj_index] = bl_hm
