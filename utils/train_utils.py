@@ -87,13 +87,10 @@ def get_feedback_hm_loss_for_each_bbox(hm_pred, bbox, class_index, radius_radio=
     return tf.stack([group_1, group_2, group_3, group_4, group_5, group_6], axis=0)
 
 
-
-
 if __name__ == '__main__':
     net_pred = tf.placeholder(shape=(None, 128, 128, 80), dtype=tf.float32)
     bbox = tf.placeholder(shape=(4), dtype=tf.float32)
-    pl, nl = get_feedback_hm_loss_for_each_bbox(net_pred, bbox=bbox, class_index=23)
-
+    pl = get_feedback_hm_loss_for_each_bbox(net_pred, bbox=bbox, class_index=23)
 
     with tf.Session() as sess:
         for i in range(100):
@@ -106,7 +103,7 @@ if __name__ == '__main__':
             ymin = np.min(cc)
             ymax = np.max(cc)
 
-            apll, nll = sess.run([pl, nl], feed_dict={net_pred: c, bbox:np.array([ymin, xmin, ymax, xmax])})
+            apll = sess.run(pl, feed_dict={net_pred: c, bbox:np.array([ymin, xmin, ymax, xmax])})
             pass
 
     pass
