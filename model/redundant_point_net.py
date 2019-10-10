@@ -39,7 +39,12 @@ class redudant_point_network():
 
         ## center prediction
         self.c_heat, self.c_embeds, self.c_offset = self.prediction_module(hourglass_feat, is_training, scope='center')
-        pass
+
+        output = [[self.tl_heat, self.tl_embeds, self.tl_offset], [self.tr_heat, self.tr_embeds, self.tr_offset],
+                  [self.bl_heat, self.bl_embeds, self.bl_offset], [self.br_heat, self.br_embeds, self.br_offset],
+                  [self.c_heat, self.c_embeds, self.c_offset]
+                  ]
+        return output
 
 
     def prediction_module(self, input, is_training, scope):
