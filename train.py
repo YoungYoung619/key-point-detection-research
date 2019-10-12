@@ -22,7 +22,7 @@ if __name__ == '__main__':
             'pascalvoc_2012', 'train', './dataset/voc2012_tfrecord/')
 
         img, labels, bboxes = prepare_data_train(dataset, num_readers=4, batch_size=10, shuffle=True)
-
+        batch_img, batch_labels, batch_bboxes = tf.train.batch([img, labels, bboxes], batch_size=10, num_threads=4, capacity=50, dynamic_pad=True)
         pass
     pass
 
