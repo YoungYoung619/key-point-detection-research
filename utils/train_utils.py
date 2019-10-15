@@ -18,22 +18,22 @@ from utils.kp2hm_utils import heat_map_tf
 group_index_dict = {'lt_rb': 0, 'rt_lb': 1, 'c_lt': 2,
                     'c_rt': 3, 'c_lb': 4, 'c_rb': 5}
 
-def pos_loss_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index):
+def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index):
     """ pos relative loss calculation for one box
     Args:
         hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
-        emb_pred: a list of embedding prediction, each elemt with a shape [1, 128, 128, 1]
-        offset_pred: a list of offset prediction, each elemt with a shape [1 ,128, 128, 2]
-        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (4,)
-        class_index: class index, with a shape (1,)
+        points_mask: a list of mask, each elemt with a shape (n_bboxes, ), denotes whether a key point is a pos
+        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
+        class_index: class index, with a shape (n_bboxes,)
+        index: indicate which bbox to be calculated
     Return:
         a list of heat map ground truth, each elemt with a shape [[1, 128, 128, n_class]]
         a tensor represents embedding pair, [key_point_1_embeding, key_point_2_embeding]
         a list of offset pair for 5 different key points, each with shape (2,), [offset_preds, offset_gt]
         a list of mask, each with a shape (1,), represents whether a key point is be selective.
     """
-    hm_gts, emb_pair, offset_gt, points_mask = encode_for_one_bbox(hm_preds, emb_preds, offset_preds,
-                                                                      bbox, class_index, radius_radio=6)
+    bbox = tf.gather(bboxes, index)
+    class_index = tf.gather(class_indexs, index)
 
     ## points in x, y cordinate
     left_top = tf.stack([bbox[1], bbox[0]], axis=0) * config.hm_size[::-1]
@@ -56,29 +56,76 @@ def pos_loss_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index):
     with tf.name_scope('pos_hm_loss'):
         pos_hm_loss = []
         for hm_pred, point_mask, point_cord in zip(hm_preds, points_mask, points_cord):
-            hm_pred = tf.gather_nd(hm_pred, [0, point_cord[1], point_cord[0], class_index])
+            hm_pred = tf.gather_nd(hm_pred, [0, point_cord[1], point_cord[0], tf.cast(class_index, tf.int32)])
+            point_mask = tf.gather(point_mask, index)
             pos_hm_loss.append(tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred) * point_mask)
 
         pos_hm_loss = tf.reduce_sum(tf.stack(pos_hm_loss, axis=0))
 
-    # with tf.name_scope('neg_hm_loss'):
-    #     neg_hm_loss = []
-    #     for hm_pred, hm_gt, point_mask, point_cord in zip(hm_preds, hm_gts, points_mask, points_cord):
-    #         neg_mask = tf.cast(tf.less(hm_gt, 1.), tf.float32)
-    #         neg_loss = -tf.pow(1. - hm_gt, config.focal_loss_belta) * tf.pow(hm_pred, config.focal_loss_alpha) * tf.log(1 - hm_pred * neg_mask)
-
-    with tf.name_scope('embedding_loss'):
-        pass
+    return pos_hm_loss
 
 
-def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, radius_radio=6):
-    """encode for one img
+def hm_neg_loss_for_one_img(hm_preds, hm_gts):
+    """calculate the neg loss for heat map"""
+    neg_loss = []
+    for hm_pred, hm_gt in zip(hm_preds, hm_gts):
+        neg_mask = tf.cast(tf.less(hm_gt, 1.), tf.float32)
+        hm_pred = tf.squeeze(hm_pred)
+        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(1 - hm_pred*neg_mask))
+
+    neg_loss = tf.reduce_sum(tf.stack(neg_loss, axis=0))
+    return neg_loss
+
+
+def hm_pos_loss_one_img(hm_preds, points_mask, bboxes, class_indexs):
+    """calculate the pos loss for heat map"""
+    ########## pos loss for hm #############
+    def tfw_condition_pos_hm(i, pos_hm_loss):
+        return tf.less(i, tf.shape(bboxes)[0])
+
+    def tfw_body_pos_hm(i, pos_hm_loss):
+        pos_hm_loss_ = hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, i)
+        pos_hm_loss = tf.concat([pos_hm_loss, tf.expand_dims(pos_hm_loss_, axis=0)], axis=0)
+        return i+1, pos_hm_loss
+
+    i = tf.constant(1)
+    pos_hm_loss = hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, 0)
+    pos_hm_loss = tf.expand_dims(pos_hm_loss, axis=0)
+
+    i, pos_hm_loss = tf.while_loop(tfw_condition_pos_hm, tfw_body_pos_hm, [i, pos_hm_loss], shape_invariants=[i.get_shape(),
+                                                                                             tf.TensorShape([None])])
+    pos_hm_loss = tf.reduce_sum(pos_hm_loss)
+    ########## pos loss for hm #############
+
+    return pos_hm_loss
+
+
+def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
+    """calculate the loss
     Args:
         hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
         emb_pred: a list of embedding prediction, each elemt with a shape [1, 128, 128, 1]
         offset_pred: a list of offset prediction, each elemt with a shape [1 ,128, 128, 2]
         bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
-        class_indexs: class index, with a shape (n_bboxes, 1)
+        class_indexs: class index, with a shape (n_bboxes,)
+    """
+    hm_gts, embedding_pairs, offset_pairs, points_mask = encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes,
+                                                                             class_indexs)
+
+    pos_hm_loss = hm_pos_loss_one_img(hm_preds, points_mask, bboxes, class_indexs)
+    neg_hm_loss = hm_neg_loss_for_one_img(hm_preds, hm_gts)
+
+    ## todo
+
+
+def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, radius_radio=6):
+    """encode for one img, the tf while_loop is so disgusting!!
+    Args:
+        hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
+        emb_pred: a list of embedding prediction, each elemt with a shape [1, 128, 128, 1]
+        offset_pred: a list of offset prediction, each elemt with a shape [1 ,128, 128, 2]
+        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
+        class_indexs: class index, with a shape (n_bboxes, )
     Return:
         a list of heat map ground truth, each elemt with a shape (128, 128, n_class)
         a tensor represents the embedding, with a shape (n_bboxes, 2), [key_point_1_embeding, key_point_2_embeding]
@@ -91,7 +138,7 @@ def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, 
     def tfw_body(i, *args):
         hm_gts, embedding, offset_pairs, points_mask = tf_utils.reshape_list(args, shape=[5, 1, 5, 5])
         hm_gts_, emb_pair_, offset_pairs_, points_mask_ = encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bboxes[i],
-                                                                          class_indexs[i], radius_radio)
+                                                                              class_indexs[i], radius_radio)
         temp_hm_gt = []
         for hm_gt, hm_gt_ in zip(hm_gts, hm_gts_):
             temp_hm_gt.append(tf.maximum(hm_gt, hm_gt_))
@@ -118,9 +165,7 @@ def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, 
     loop_vars = [i] + hm_gts_ + [embedding_pair] + offset_pairs + points_mask
     i, hm_gts, embedding_pairs, offset_pairs, points_mask = tf_utils.reshape_list(tf.while_loop(tfw_condition, tfw_body, loop_vars,
                                                                                                 shape_invariants=shape_invariants), shape=[1, 5, 1, 5, 5])
-    pass
-
-
+    return hm_gts, embedding_pairs, offset_pairs, points_mask
 
 
 def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, radius_radio=6):
@@ -381,4 +426,4 @@ if __name__ == '__main__':
     bboxes = tf.placeholder(shape=[None, 4], dtype=tf.float32)
     class_indexs = tf.placeholder(shape=[None], dtype=tf.int64)
 
-    encode_for_one_img([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
+    loss_for_one_img([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
