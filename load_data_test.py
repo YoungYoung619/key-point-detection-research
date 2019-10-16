@@ -11,7 +11,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 
-from dataset import dataset_factory
+from datasets import dataset_factory
 
 from utils.data_pileline_utils import *
 from utils.vis_utils import visualize_boxes_and_labels_on_image_array
