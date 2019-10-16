@@ -14,9 +14,118 @@ import cv2
 
 from utils.tf_extended import tf_utils
 from utils.kp2hm_utils import heat_map_tf
+from utils.tf_triplet_loss import triplet_semihard_loss
 
 group_index_dict = {'lt_rb': 0, 'rt_lb': 1, 'c_lt': 2,
                     'c_rt': 3, 'c_lb': 4, 'c_rb': 5}
+
+
+def loss_for_batch(b_hm_preds, b_emb_preds, b_offset_preds, b_bboxes, b_class_indexs):
+    def get_hm_preds(index):
+        hm_preds = []
+        for b_hm_pred in b_hm_preds:
+            hm_preds.append(tf.expand_dims(tf.gather(b_hm_pred, index), axis=0))
+        return hm_preds
+
+    def get_emb_preds(index):
+        emb_preds = []
+        for b_emb_pred in b_emb_preds:
+            emb_preds.append(tf.expand_dims(tf.gather(b_emb_pred, index), axis=0))
+        return emb_preds
+
+    def get_offset_preds(index):
+        offset_preds = []
+        for b_offset_pred in b_offset_preds:
+            offset_preds.append(tf.expand_dims(tf.gather(b_offset_pred, index), axis=0))
+        return offset_preds
+
+    def tfw_condition(i, total_loss):
+        return tf.less(i, tf.shape(b_hm_preds)[0])
+
+    def tfw_body(i, total_loss):
+        aa = get_hm_preds(i)
+        bb = get_emb_preds(i)
+        cc = get_offset_preds(i)
+        loss = loss_for_one_img(aa, bb, cc, b_bboxes[i], b_class_indexs[i])
+        loss = tf.concat([total_loss, tf.expand_dims(loss, dim=0)], axis=0)
+        return i+1, loss
+
+    i = tf.constant(1)
+    loss = loss_for_one_img(get_hm_preds(0), get_emb_preds(0), get_offset_preds(0), b_bboxes[0], b_class_indexs[0])
+    loss = tf.expand_dims(loss, axis=0)
+
+    i, loss_ = tf.while_loop(tfw_condition, tfw_body, [i, loss], shape_invariants=[i.get_shape(), tf.TensorShape([None])])
+    return loss_
+
+
+def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
+    """calculate the loss for one img
+    Args:
+        hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
+        emb_pred: a list of embedding prediction, each elemt with a shape [1, 128, 128, 1]
+        offset_pred: a list of offset prediction, each elemt with a shape [1 ,128, 128, 2]
+        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
+        class_indexs: class index, with a shape (n_bboxes,)
+    Return:
+        a total loss for training
+    """
+    hm_gts, embedding_pairs, offset_pairs, points_mask = encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes,
+                                                                             class_indexs)
+
+    ## heat map loss
+    # pos_hm_loss = hm_pos_loss_for_one_img(hm_preds, points_mask, bboxes, class_indexs)
+    # tf.summary.scalar('pos_hm_loss', pos_hm_loss)
+    #
+    # neg_hm_loss = hm_neg_loss_for_one_img(hm_preds, hm_gts)
+    # tf.summary.scalar('neg_hm_loss', neg_hm_loss)
+
+    ## embedding loss
+    embedding_loss = embedding_pairs_loss_for_one_img(embedding_pairs)
+    tf.summary.scalar('embedding_loss', embedding_loss)
+
+    ## offset loss
+    offset_loss = offset_loss_for_one_img(offset_pairs, points_mask)
+    tf.summary.scalar('offset_loss', offset_loss)
+
+    return 0.1*embedding_loss + offset_loss
+
+
+def offset_loss_for_one_img(offset_pairs, points_mask):
+    def _smooth_l1(x):
+        """Smoothed absolute function. Useful to compute an L1 smooth error.
+        Define as:
+            x^2 / 2         if abs(x) < 1
+            abs(x) - 0.5    if abs(x) > 1
+        We use here a differentiable definition using min(x) and abs(x). Clearly
+        not optimal, but good enough for our purpose!
+        """
+        absx = tf.abs(x)
+        minx = tf.minimum(absx, 1)
+        r = 0.5 * ((absx - 1) * minx + absx)  ## smooth_l1
+        return r
+
+    offset_loss = []
+    for offset_pair, point_mask in zip(offset_pairs, points_mask):
+        offset_diff_in_xy = tf.reduce_sum(offset_pair[:, :, 0] - offset_pair[:, :, 1], axis=-1)
+        offset_diff_in_xy *= point_mask
+        offset_loss.append(tf.reduce_sum(_smooth_l1(offset_diff_in_xy)))
+
+    offset_loss = tf.stack(offset_loss, axis=0)
+    offset_loss = tf.reduce_sum(offset_loss)
+    return offset_loss
+
+
+def embedding_pairs_loss_for_one_img(embedding_pairs):
+    """calculate the loss of embedding pairs
+    Args:
+        embedding_pairs: a tensor with a shape (n_bboxes, 2)
+    """
+    labels = tf.linspace(0., tf.cast(tf.shape(embedding_pairs)[0] - 1, tf.float32), tf.shape(embedding_pairs)[0])
+    labels = tf.stack([labels, labels], axis=-1)
+    labels = tf.cast(tf.reshape(labels, shape=[-1]), dtype=tf.int32)
+    embedding_ = tf.expand_dims(tf.reshape(embedding_pairs, shape=[-1]), axis=-1)
+    return triplet_semihard_loss(labels, embedding_, margin=1.0)
+
 
 def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index):
     """ pos relative loss calculation for one box
@@ -58,6 +167,7 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
         for hm_pred, point_mask, point_cord in zip(hm_preds, points_mask, points_cord):
             hm_pred = tf.gather_nd(hm_pred, [0, point_cord[1], point_cord[0], tf.cast(class_index, tf.int32)])
             point_mask = tf.gather(point_mask, index)
+            hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
             pos_hm_loss.append(tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred) * point_mask)
 
         pos_hm_loss = tf.reduce_sum(tf.stack(pos_hm_loss, axis=0))
@@ -71,13 +181,14 @@ def hm_neg_loss_for_one_img(hm_preds, hm_gts):
     for hm_pred, hm_gt in zip(hm_preds, hm_gts):
         neg_mask = tf.cast(tf.less(hm_gt, 1.), tf.float32)
         hm_pred = tf.squeeze(hm_pred)
-        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(1 - hm_pred*neg_mask))
+        hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
+        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(1. - hm_pred*neg_mask))
 
     neg_loss = tf.reduce_sum(tf.stack(neg_loss, axis=0))
     return neg_loss
 
 
-def hm_pos_loss_one_img(hm_preds, points_mask, bboxes, class_indexs):
+def hm_pos_loss_for_one_img(hm_preds, points_mask, bboxes, class_indexs):
     """calculate the pos loss for heat map"""
     ########## pos loss for hm #############
     def tfw_condition_pos_hm(i, pos_hm_loss):
@@ -98,24 +209,6 @@ def hm_pos_loss_one_img(hm_preds, points_mask, bboxes, class_indexs):
     ########## pos loss for hm #############
 
     return pos_hm_loss
-
-
-def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
-    """calculate the loss
-    Args:
-        hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
-        emb_pred: a list of embedding prediction, each elemt with a shape [1, 128, 128, 1]
-        offset_pred: a list of offset prediction, each elemt with a shape [1 ,128, 128, 2]
-        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
-        class_indexs: class index, with a shape (n_bboxes,)
-    """
-    hm_gts, embedding_pairs, offset_pairs, points_mask = encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes,
-                                                                             class_indexs)
-
-    pos_hm_loss = hm_pos_loss_one_img(hm_preds, points_mask, bboxes, class_indexs)
-    neg_hm_loss = hm_neg_loss_for_one_img(hm_preds, hm_gts)
-
-    ## todo
 
 
 def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, radius_radio=6):
@@ -179,7 +272,7 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
     Return:
         a list of heat map ground truth, each elemt with a shape (128, 128, n_class)
         a tensor represents embedding pair, with a shape (1, 2)[key_point_1_embeding, key_point_2_embeding]
-        a list of offset pair for 5 different key points, each with shape (1, 2, 2), [offset_preds, offset_gt]
+        a list of offset pair for 5 different key points, each with shape (1, 2, 2), the last dim is [offset_preds_x(y), offset_gt_x(y)]
         a list of mask, each with a shape (1,), represents whether a key point is be selective.
     """
     ## heat map ground truth
@@ -189,7 +282,7 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
 
     ## points in x, y cordinate
     ones = tf.ones(shape=(config.hm_size[0], config.hm_size[1], config.n_class))
-    class_one_hot = tf.one_hot(class_indexs[0], config.n_class)
+    class_one_hot = tf.one_hot(class_index, config.n_class)
 
     left_top = tf.stack([bbox[1], bbox[0]], axis=0) * config.hm_size[::-1]
     left_top_int = tf.cast(left_top, tf.int32)  ## xy cord
@@ -274,10 +367,10 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
     rb_offset = right_bottom - tf.cast(right_bottom_int, tf.float32)
     c_offset = center - tf.cast(center_int, tf.float32)
 
-    lt_offset_pair = tf.expand_dims(tf.stack([lt_offset_pred, lt_offset], axis=0), axis=0)
-    rt_offset_pair = tf.expand_dims(tf.stack([rt_offset_pred, rt_offset], axis=0), axis=0)
-    lb_offset_pair = tf.expand_dims(tf.stack([lb_offset_pred, lb_offset], axis=0), axis=0)
-    rb_offset_pair = tf.expand_dims(tf.stack([rb_offset_pred, rb_offset], axis=0), axis=0)
+    lt_offset_pair = tf.expand_dims(tf.stack([lt_offset_pred, lt_offset], axis=-1), axis=0)
+    rt_offset_pair = tf.expand_dims(tf.stack([rt_offset_pred, rt_offset], axis=-1), axis=0)
+    lb_offset_pair = tf.expand_dims(tf.stack([lb_offset_pred, lb_offset], axis=-1), axis=0)
+    rb_offset_pair = tf.expand_dims(tf.stack([rb_offset_pred, rb_offset], axis=-1), axis=0)
     c_offset_pair = tf.expand_dims(tf.stack([c_offset_pred, c_offset], axis=0), axis=0)
     offsets = [lt_offset_pair, rt_offset_pair, lb_offset_pair, rb_offset_pair, c_offset_pair]
 
@@ -340,13 +433,15 @@ def get_feedback_hm_loss_for_one_bbox(hm_preds, hm_gts, bbox, class_index, consi
         size_x = tf.minimum(consider_radius + x_index - x_begin, config.hm_size[1] - x_begin)
         consider_range_pred = tf.squeeze(tf.slice(hm_pred, begin=(0, y_begin, x_begin, tf.cast(class_index, tf.int32)), size=(1, size_y, size_x, 1)))
 
+        pos_pred = tf.clip_by_value(pos_pred, 1e-10, 1.)
         pos_loss = -tf.pow(1 - pos_pred, config.focal_loss_alpha)*tf.log(pos_pred)
 
         hm_gt = tf.transpose(hm_gt, perm=[2, 0, 1])
         hm_gt = tf.gather_nd(hm_gt, [class_index])
         consider_range_gt = tf.slice(hm_gt, begin=(y_begin, x_begin), size=(size_y, size_x))
         neg_mask = tf.cast(tf.less(consider_range_gt, 1.), tf.float32)
-        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(1 - consider_range_pred*neg_mask)
+        consider_range_pred = tf.clip_by_value(consider_range_pred, 1e-10, 1.)
+        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(1. - consider_range_pred*neg_mask)
         neg_loss = tf.reduce_mean(neg_loss)
 
         return pos_loss + neg_loss
@@ -420,10 +515,36 @@ if __name__ == '__main__':
     # pass
 
     ## test-3 encode_for_one_img
-    net_pred = tf.placeholder(shape=[1, 128, 128, 80], dtype=tf.float32)
-    emb_pred = tf.placeholder(shape=[1, 128, 128, 1], dtype=tf.float32)
-    offset_pred = tf.placeholder(shape=[1, 128, 128, 2], dtype=tf.float32)
-    bboxes = tf.placeholder(shape=[None, 4], dtype=tf.float32)
-    class_indexs = tf.placeholder(shape=[None], dtype=tf.int64)
+    net_pred = tf.placeholder(shape=[2, 128, 128, config.n_class], dtype=tf.float32)
+    emb_pred = tf.placeholder(shape=[2, 128, 128, 1], dtype=tf.float32)
+    offset_pred = tf.placeholder(shape=[2, 128, 128, 2], dtype=tf.float32)
+    bboxes = tf.placeholder(shape=[2, None, 4], dtype=tf.float32)
+    class_indexs = tf.placeholder(shape=[2, None], dtype=tf.int64)
 
-    loss_for_one_img([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
+    loss = loss_for_batch([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
+
+    with tf.Session() as sess:
+        net_pred_n = np.random.uniform(0, 1, [2, 128, 128, config.n_class])
+        emb_pred_n = np.random.uniform(0, 1, [2, 128, 128, 1])
+        offset_pred_n = np.random.uniform(0, 1, [2, 128, 128, 2])
+
+        bboxes_n = []
+        for i in range(2):
+            c = np.random.uniform(0, 1, (10, 128, 128, 80))
+
+            b = np.random.uniform(0, 1, 2)
+            xmin = np.min(b)
+            xmax = np.max(b)
+            cc = np.random.uniform(0, 1, 2)
+            ymin = np.min(cc)
+            ymax = np.max(cc)
+            bboxes_n.append(np.array([ymin, xmin, ymax, xmax]))
+        bboxes_n = np.array(bboxes_n*2)
+        bboxes_n = np.reshape(bboxes_n, (2,2,4))
+
+        class_indexs_n = np.random.randint(0, 10, [2, 2])
+
+        l = sess.run(loss, feed_dict={net_pred: net_pred_n, emb_pred: emb_pred_n, offset_pred:offset_pred_n,
+                                       bboxes: bboxes_n, class_indexs:class_indexs_n})
+        pass
+
