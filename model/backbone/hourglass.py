@@ -16,7 +16,8 @@ import numpy as np
 
 ## some defualt config described in cornetnet
 n_deep = 5
-n_dims = [256, 256, 384, 384, 384, 512]
+# n_dims = [256, 256, 384, 384, 384, 512]
+n_dims = [32, 32, 50, 50, 50, 128]
 n_res = [2, 2, 2, 2, 2, 4]
 
 
