@@ -17,13 +17,13 @@ from utils.train_utils import loss_for_batch
 
 if __name__ == '__main__':
     # redudant_point_network()
-    bs = 2
+    bs = 1
     with tf.device('/cpu:0'):
         dataset = dataset_factory.get_dataset(
             'pascalvoc_2012', 'train', './datasets/voc2012_tfrecord/')
 
-        img, labels, bboxes = prepare_data_train(dataset, num_readers=4, batch_size=bs, shuffle=True)
-        batch_img, batch_labels, batch_bboxes = tf.train.batch([img, labels, bboxes], batch_size=bs, num_threads=4, capacity=bs*10, dynamic_pad=True)
+        img, labels, bboxes = prepare_data_train(dataset, num_readers=4, batch_size=bs, shuffle=False)
+        batch_img, batch_labels, batch_bboxes = tf.train.batch([img, labels-1, bboxes], batch_size=bs, num_threads=4, capacity=bs*10, dynamic_pad=True)
 
     net = redudant_point_network(input=batch_img, is_training=True, n_class=config.n_class)
     hm_preds, emb_preds, offset_preds = net.get_output()
@@ -43,6 +43,7 @@ if __name__ == '__main__':
         sess.run(init)
         while (True):
             l = sess.run(loss)
+            print(l)
             pass
 
         # terminate the threads #
