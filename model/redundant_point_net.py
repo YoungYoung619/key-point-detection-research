@@ -43,8 +43,6 @@ class redudant_point_network():
         self.output = [[self.tl_heat, self.tr_heat, self.bl_heat, self.br_heat, self.c_heat],
                   [self.tl_embeds, self.tr_embeds, self.bl_embeds, self.br_embeds, self.c_embeds],
                   [self.tl_offset, self.tr_offset, self.bl_offset, self.br_offset, self.c_offset]]
-
-
     def get_output(self):
         return  self.output
 
