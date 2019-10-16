@@ -10,7 +10,7 @@ Author：Team Li
 
 img_size = (511, 511)
 hm_size = (128, 128)
-n_class = 80
+n_class = 20
 
 min_radius_for_feedback_cal = 2
 radius_scalar = 10
