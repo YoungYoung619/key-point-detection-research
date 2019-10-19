@@ -24,29 +24,26 @@ def loss_for_batch(b_hm_preds, b_emb_preds, b_offset_preds, b_bboxes, b_class_in
     def get_hm_preds(index):
         hm_preds = []
         for b_hm_pred in b_hm_preds:
-            hm_preds.append(tf.expand_dims(tf.gather(b_hm_pred, index), axis=0))
+            hm_preds.append(tf.gather(b_hm_pred, [index]))
         return hm_preds
 
     def get_emb_preds(index):
         emb_preds = []
         for b_emb_pred in b_emb_preds:
-            emb_preds.append(tf.expand_dims(tf.gather(b_emb_pred, index), axis=0))
+            emb_preds.append(tf.gather(b_emb_pred, [index]))
         return emb_preds
 
     def get_offset_preds(index):
         offset_preds = []
         for b_offset_pred in b_offset_preds:
-            offset_preds.append(tf.expand_dims(tf.gather(b_offset_pred, index), axis=0))
+            offset_preds.append(tf.gather(b_offset_pred, [index]))
         return offset_preds
 
     def tfw_condition(i, total_loss):
-        return tf.less(i, tf.shape(b_hm_preds)[0])
+        return tf.less(i, tf.shape(b_bboxes)[0])
 
     def tfw_body(i, total_loss):
-        aa = get_hm_preds(i)
-        bb = get_emb_preds(i)
-        cc = get_offset_preds(i)
-        loss = loss_for_one_img(aa, bb, cc, b_bboxes[i], b_class_indexs[i])
+        loss = loss_for_one_img(get_hm_preds(i), get_emb_preds(i), get_offset_preds(i), b_bboxes[i], b_class_indexs[i])
         loss = tf.concat([total_loss, tf.expand_dims(loss, dim=0)], axis=0)
         return i+1, loss
 
@@ -55,7 +52,7 @@ def loss_for_batch(b_hm_preds, b_emb_preds, b_offset_preds, b_bboxes, b_class_in
     loss = tf.expand_dims(loss, axis=0)
 
     i, loss_ = tf.while_loop(tfw_condition, tfw_body, [i, loss], shape_invariants=[i.get_shape(), tf.TensorShape([None])])
-    return loss_
+    return tf.reduce_mean(loss_)
 
 
 def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
@@ -73,21 +70,21 @@ def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
                                                                              class_indexs)
 
     ## heat map loss
-    # pos_hm_loss = hm_pos_loss_for_one_img(hm_preds, points_mask, bboxes, class_indexs)
+    pos_hm_loss = hm_pos_loss_for_one_img(hm_preds, points_mask, bboxes, class_indexs)
     # tf.summary.scalar('pos_hm_loss', pos_hm_loss)
-    #
-    # neg_hm_loss = hm_neg_loss_for_one_img(hm_preds, hm_gts)
+
+    neg_hm_loss = hm_neg_loss_for_one_img(hm_preds, hm_gts)
     # tf.summary.scalar('neg_hm_loss', neg_hm_loss)
 
     ## embedding loss
     embedding_loss = embedding_pairs_loss_for_one_img(embedding_pairs)
-    tf.summary.scalar('embedding_loss', embedding_loss)
+    # tf.summary.scalar('embedding_loss', embedding_loss)
 
     ## offset loss
     offset_loss = offset_loss_for_one_img(offset_pairs, points_mask)
-    tf.summary.scalar('offset_loss', offset_loss)
+    # tf.summary.scalar('offset_loss', offset_loss)
 
-    return 0.1*embedding_loss + offset_loss
+    return pos_hm_loss + neg_hm_loss + 0.1*embedding_loss + offset_loss
 
 
 def offset_loss_for_one_img(offset_pairs, points_mask):
@@ -142,7 +139,7 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
         a list of mask, each with a shape (1,), represents whether a key point is be selective.
     """
     bbox = tf.gather(bboxes, index)
-    class_index = tf.gather(class_indexs, index)
+    class_index = tf.gather(class_indexs, [index])
 
     ## points in x, y cordinate
     left_top = tf.stack([bbox[1], bbox[0]], axis=0) * config.hm_size[::-1]
@@ -165,12 +162,12 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
     with tf.name_scope('pos_hm_loss'):
         pos_hm_loss = []
         for hm_pred, point_mask, point_cord in zip(hm_preds, points_mask, points_cord):
-            hm_pred = tf.gather_nd(hm_pred, [0, point_cord[1], point_cord[0], tf.cast(class_index, tf.int32)])
-            point_mask = tf.gather(point_mask, index)
+            hm_pred = tf.gather_nd(hm_pred, [[0, point_cord[1], point_cord[0], tf.cast(class_index[0], tf.int32)]])
+            point_mask = tf.gather(point_mask, [index])
             hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
-            pos_hm_loss.append(tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred) * point_mask)
-
-        pos_hm_loss = tf.reduce_sum(tf.stack(pos_hm_loss, axis=0))
+            pos_hm_loss.append(-tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred) * point_mask)
+        pos_hm_loss = tf.concat(pos_hm_loss, axis=0)
+        pos_hm_loss = tf.reduce_sum(pos_hm_loss)
 
     return pos_hm_loss
 
@@ -182,9 +179,10 @@ def hm_neg_loss_for_one_img(hm_preds, hm_gts):
         neg_mask = tf.cast(tf.less(hm_gt, 1.), tf.float32)
         hm_pred = tf.squeeze(hm_pred)
         hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
-        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(1. - hm_pred*neg_mask))
+        neg_pred = tf.clip_by_value(1. - hm_pred*neg_mask, 1e-10, 1.)
+        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(neg_pred))
 
-    neg_loss = tf.reduce_sum(tf.stack(neg_loss, axis=0))
+    neg_loss = tf.reduce_mean(tf.stack(neg_loss, axis=0))
     return neg_loss
 
 
@@ -317,32 +315,32 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
     g_index = tf.argmax(g_loss)
 
     ## select mining point pos mask
-    lt_mask = tf.expand_dims(tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
-                                    tf.equal(g_index, group_index_dict['c_lt'])), tf.float32), dim=0)
-    rt_mask = tf.expand_dims(tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['rt_lb']),
-                                    tf.equal(g_index, group_index_dict['c_rt'])), tf.float32), dim=0)
-    lb_mask = tf.expand_dims(tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['rt_lb']),
-                                    tf.equal(g_index, group_index_dict['c_lb'])), tf.float32), dim=0)
-    rb_mask = tf.expand_dims(tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
-                                    tf.equal(g_index, group_index_dict['c_rb'])), tf.float32), dim=0)
-    c_mask = tf.expand_dims(tf.cast(tf.logical_not(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
-                                                  tf.equal(g_index, group_index_dict['rt_lb']))), tf.float32), dim=0)
+    lt_mask = tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
+                                    tf.equal(g_index, group_index_dict['c_lt'])), tf.float32)
+    rt_mask = tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['rt_lb']),
+                                    tf.equal(g_index, group_index_dict['c_rt'])), tf.float32)
+    lb_mask = tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['rt_lb']),
+                                    tf.equal(g_index, group_index_dict['c_lb'])), tf.float32)
+    rb_mask = tf.cast(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
+                                    tf.equal(g_index, group_index_dict['c_rb'])), tf.float32)
+    c_mask = tf.cast(tf.logical_not(tf.logical_or(tf.equal(g_index, group_index_dict['lt_rb']),
+                                                  tf.equal(g_index, group_index_dict['rt_lb']))), tf.float32)
 
     points_pos_mask = [lt_mask, rt_mask, lb_mask, rb_mask, c_mask] ## each step, 2 in it must be 1, other 0
 
     ## select the corresponding embedding to be pairs
-    lt_embedding = tf.gather_nd(emb_preds[0], [0, left_top_int[1], left_top_int[0], 0])
-    rt_embedding = tf.gather_nd(emb_preds[1], [0, right_top_int[1], right_top_int[0], 0])
-    lb_embedding = tf.gather_nd(emb_preds[2], [0, left_bottom_int[1], left_bottom_int[0], 0])
-    rb_embedding = tf.gather_nd(emb_preds[3], [0, right_bottom_int[1], right_bottom_int[0], 0])
-    c_embedding = tf.gather_nd(emb_preds[4], [0, center_int[1], center_int[0], 0])
+    lt_embedding = tf.gather_nd(emb_preds[0], [[0, left_top_int[1], left_top_int[0], 0]])
+    rt_embedding = tf.gather_nd(emb_preds[1], [[0, right_top_int[1], right_top_int[0], 0]])
+    lb_embedding = tf.gather_nd(emb_preds[2], [[0, left_bottom_int[1], left_bottom_int[0], 0]])
+    rb_embedding = tf.gather_nd(emb_preds[3], [[0, right_bottom_int[1], right_bottom_int[0], 0]])
+    c_embedding = tf.gather_nd(emb_preds[4], [[0, center_int[1], center_int[0], 0]])
 
-    lt_rb_emb_pair = tf.stack([lt_embedding, rb_embedding], axis=0)
-    rt_lb_emb_pair = tf.stack([rt_embedding, lb_embedding], axis=0)
-    c_lt_emb_pair = tf.stack([c_embedding, lt_embedding], axis=0)
-    c_rt_emb_pair = tf.stack([c_embedding, rt_embedding], axis=0)
-    c_lb_emb_pair = tf.stack([c_embedding, lb_embedding], axis=0)
-    c_rb_emb_pair = tf.stack([c_embedding, rb_embedding], axis=0)
+    lt_rb_emb_pair = tf.concat([lt_embedding, rb_embedding], axis=0)
+    rt_lb_emb_pair = tf.concat([rt_embedding, lb_embedding], axis=0)
+    c_lt_emb_pair = tf.concat([c_embedding, lt_embedding], axis=0)
+    c_rt_emb_pair = tf.concat([c_embedding, rt_embedding], axis=0)
+    c_lb_emb_pair = tf.concat([c_embedding, lb_embedding], axis=0)
+    c_rb_emb_pair = tf.concat([c_embedding, rb_embedding], axis=0)
 
     lt_rb_emb_pair = lt_rb_emb_pair * tf.cast(tf.equal(g_index, group_index_dict['lt_rb']), tf.float32)
     rt_lb_emb_pair = rt_lb_emb_pair * tf.cast(tf.equal(g_index, group_index_dict['rt_lb']), tf.float32)
@@ -355,11 +353,11 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
     emb_pair = tf.expand_dims(emb_pair, axis=0)
 
     ## select the offset for pos
-    lt_offset_pred = tf.gather_nd(offset_preds[0], [0, left_top_int[1], left_top_int[0]])
-    rt_offset_pred = tf.gather_nd(offset_preds[1], [0, right_top_int[1], right_top_int[0]])
-    lb_offset_pred = tf.gather_nd(offset_preds[2], [0, left_bottom_int[1], left_bottom_int[0]])
-    rb_offset_pred = tf.gather_nd(offset_preds[3], [0, right_bottom_int[1], right_bottom_int[0]])
-    c_offset_pred = tf.gather_nd(offset_preds[4], [0, center_int[1], center_int[0]])
+    lt_offset_pred = tf.squeeze(tf.gather_nd(offset_preds[0], [[0, left_top_int[1], left_top_int[0]]]))
+    rt_offset_pred = tf.squeeze(tf.gather_nd(offset_preds[1], [[0, right_top_int[1], right_top_int[0]]]))
+    lb_offset_pred = tf.squeeze(tf.gather_nd(offset_preds[2], [[0, left_bottom_int[1], left_bottom_int[0]]]))
+    rb_offset_pred = tf.squeeze(tf.gather_nd(offset_preds[3], [[0, right_bottom_int[1], right_bottom_int[0]]]))
+    c_offset_pred = tf.squeeze(tf.gather_nd(offset_preds[4], [[0, center_int[1], center_int[0]]]))
 
     lt_offset = left_top - tf.cast(left_top_int, tf.float32)
     rt_offset = right_top - tf.cast(right_top_int, tf.float32)
@@ -425,13 +423,13 @@ def get_feedback_hm_loss_for_one_bbox(hm_preds, hm_gts, bbox, class_index, consi
         y_index = tf.cast(point[1], tf.int32)
         x_index = tf.cast(point[0], tf.int32)
 
-        pos_pred = tf.gather_nd(hm_pred, [0, y_index, x_index, tf.cast(class_index, tf.int32)])
+        pos_pred = tf.gather_nd(hm_pred, [[0, y_index, x_index, tf.cast(class_index, tf.int32)]])
 
         y_begin = tf.maximum(y_index-consider_radius, 0)
         x_begin = tf.maximum(x_index-consider_radius, 0)
         size_y = tf.minimum(consider_radius + y_index - y_begin, config.hm_size[0] - y_begin)
         size_x = tf.minimum(consider_radius + x_index - x_begin, config.hm_size[1] - x_begin)
-        consider_range_pred = tf.squeeze(tf.slice(hm_pred, begin=(0, y_begin, x_begin, tf.cast(class_index, tf.int32)), size=(1, size_y, size_x, 1)))
+        consider_range_pred = tf.squeeze(tf.slice(hm_pred, begin=(0, y_begin, x_begin, tf.cast(class_index, tf.int32)), size=(1, size_y, size_x, 1)), axis=[0,3])
 
         pos_pred = tf.clip_by_value(pos_pred, 1e-10, 1.)
         pos_loss = -tf.pow(1 - pos_pred, config.focal_loss_alpha)*tf.log(pos_pred)
@@ -441,7 +439,8 @@ def get_feedback_hm_loss_for_one_bbox(hm_preds, hm_gts, bbox, class_index, consi
         consider_range_gt = tf.slice(hm_gt, begin=(y_begin, x_begin), size=(size_y, size_x))
         neg_mask = tf.cast(tf.less(consider_range_gt, 1.), tf.float32)
         consider_range_pred = tf.clip_by_value(consider_range_pred, 1e-10, 1.)
-        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(1. - consider_range_pred*neg_mask)
+        neg_pred = tf.clip_by_value(1. - consider_range_pred*neg_mask, 1e-10, 1.)
+        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(neg_pred)
         neg_loss = tf.reduce_mean(neg_loss)
 
         return pos_loss + neg_loss
@@ -515,36 +514,76 @@ if __name__ == '__main__':
     # pass
 
     ## test-3 encode_for_one_img
+
+    ## test loss_for_one_img
+    # net_pred = tf.placeholder(shape=[1, 128, 128, config.n_class], dtype=tf.float32)
+    # emb_pred = tf.placeholder(shape=[1, 128, 128, 1], dtype=tf.float32)
+    # offset_pred = tf.placeholder(shape=[1, 128, 128, 2], dtype=tf.float32)
+    # bboxes = tf.placeholder(shape=[None, 4], dtype=tf.float32)
+    # class_indexs = tf.placeholder(shape=[None], dtype=tf.int64)
+
+    ## test loss_for_batch
     net_pred = tf.placeholder(shape=[2, 128, 128, config.n_class], dtype=tf.float32)
     emb_pred = tf.placeholder(shape=[2, 128, 128, 1], dtype=tf.float32)
     offset_pred = tf.placeholder(shape=[2, 128, 128, 2], dtype=tf.float32)
     bboxes = tf.placeholder(shape=[2, None, 4], dtype=tf.float32)
     class_indexs = tf.placeholder(shape=[2, None], dtype=tf.int64)
 
-    loss = loss_for_batch([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
+    # loss_1 = loss_for_one_img([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
+    loss_2 = loss_for_batch([net_pred]*5, [emb_pred]*5, [offset_pred]*5, bboxes, class_indexs)
 
     with tf.Session() as sess:
-        net_pred_n = np.random.uniform(0, 1, [2, 128, 128, config.n_class])
-        emb_pred_n = np.random.uniform(0, 1, [2, 128, 128, 1])
-        offset_pred_n = np.random.uniform(0, 1, [2, 128, 128, 2])
+        ## test loss_for_one_img
+        # for i in range(100):
+        #     net_pred_n = np.random.uniform(-0, 1, [1, 128, 128, config.n_class])
+        #     emb_pred_n = np.random.uniform(-0, 1, [1, 128, 128, 1])
+        #     offset_pred_n = np.random.uniform(-0, 1, [1, 128, 128, 2])
+        #
+        #     bboxes_n = []
+        #     n_bbox = np.random.randint(1, 5, 1)[0]
+        #     for i in range(n_bbox):
+        #         c = np.random.uniform(0, 1, (10, 128, 128, 80))
+        #
+        #         b = np.random.uniform(0, 1, 2)
+        #         xmin = np.min(b)
+        #         xmax = np.max(b)
+        #         cc = np.random.uniform(0, 1, 2)
+        #         ymin = np.min(cc)
+        #         ymax = np.max(cc)
+        #         bboxes_n.append(np.array([ymin, xmin, ymax, xmax]))
+        #     bboxes_n = np.array(bboxes_n)
+        #     bboxes_n = np.reshape(bboxes_n, (n_bbox,4))
+        #
+        #     class_indexs_n = np.random.randint(0, config.n_class-1, [n_bbox])
+        #
+        #     l = sess.run(loss_1, feed_dict={net_pred: net_pred_n, emb_pred: emb_pred_n, offset_pred:offset_pred_n,
+        #                                    bboxes: bboxes_n, class_indexs:class_indexs_n})
+        #     print(l)
 
-        bboxes_n = []
-        for i in range(2):
-            c = np.random.uniform(0, 1, (10, 128, 128, 80))
+        ## test loss_for_batch_img
+        for i in range(100):
+            net_pred_n = np.random.uniform(0, 1, [2, 128, 128, config.n_class])
+            emb_pred_n = np.random.uniform(0, 1, [2, 128, 128, 1])
+            offset_pred_n = np.random.uniform(0, 1, [2, 128, 128, 2])
 
-            b = np.random.uniform(0, 1, 2)
-            xmin = np.min(b)
-            xmax = np.max(b)
-            cc = np.random.uniform(0, 1, 2)
-            ymin = np.min(cc)
-            ymax = np.max(cc)
-            bboxes_n.append(np.array([ymin, xmin, ymax, xmax]))
-        bboxes_n = np.array(bboxes_n*2)
-        bboxes_n = np.reshape(bboxes_n, (2,2,4))
+            bboxes_n = []
+            n_bbox = np.random.randint(1, 5, 1)[0]
+            for i in range(n_bbox):
+                c = np.random.uniform(0, 1, (10, 128, 128, 80))
 
-        class_indexs_n = np.random.randint(0, 10, [2, 2])
+                b = np.random.uniform(0, 1, 2)
+                xmin = np.min(b)
+                xmax = np.max(b)
+                cc = np.random.uniform(0, 1, 2)
+                ymin = np.min(cc)
+                ymax = np.max(cc)
+                bboxes_n.append(np.array([0.5, 0.5, 0.5, 0.5]))
+            bboxes_n = np.array(bboxes_n*2)
+            bboxes_n = np.reshape(bboxes_n, (2, n_bbox, 4))
 
-        l = sess.run(loss, feed_dict={net_pred: net_pred_n, emb_pred: emb_pred_n, offset_pred:offset_pred_n,
-                                       bboxes: bboxes_n, class_indexs:class_indexs_n})
-        pass
+            class_indexs_n = np.random.randint(0, config.n_class, [2, n_bbox])
+
+            l = sess.run(loss_2, feed_dict={net_pred: net_pred_n, emb_pred: emb_pred_n, offset_pred:offset_pred_n,
+                                           bboxes: bboxes_n, class_indexs:class_indexs_n})
+            print(l)
 
