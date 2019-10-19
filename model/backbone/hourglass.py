@@ -17,7 +17,8 @@ import numpy as np
 ## some defualt config described in cornetnet
 n_deep = 5
 # n_dims = [256, 256, 384, 384, 384, 512]
-n_dims = [32, 32, 50, 50, 50, 128]
+radio = 3
+n_dims = [32*radio, 32*radio, 64*radio, 64*radio, 64*radio, 128*radio]
 n_res = [2, 2, 2, 2, 2, 4]
 
 
@@ -43,7 +44,8 @@ def pre_process(input, is_training,  scope='init_process'):
     """
     with tf.variable_scope(scope):
         x = tf.contrib.layers.conv2d(input, 128, 7, 2)
-        x = tf.contrib.layers.batch_norm(x, is_training=is_training)
+        # x = tf.contrib.layers.batch_norm(x, is_training=is_training)
+        x = group_norm(x)
         x = residual(x, 256, strides=(2, 2), scope='residual_start')
         return x
 
@@ -122,14 +124,35 @@ def conv_bn_re(input, out_dim, strides=(1, 1), use_relu=True, use_bn=True, kerne
         # x=tf.contrib.layers.conv2d(input,out_dim,k,stride=strides,activation_fn=None)
         x = tf.layers.conv2d(input, out_dim, kernel_size, strides=strides, padding='same')
         if use_bn:
-            x = tf.contrib.layers.batch_norm(x, is_training=is_training)
+            # x = tf.contrib.layers.batch_norm(x, is_training=is_training)
+            x = group_norm(x)
         if use_relu:
             x = tf.nn.relu(x)
         return x
 
+def group_norm(x, G=32, esp=1e-5):
+    # normalize
+    # tranpose: [bs, h, w, c] to [bs, c, h, w] following the paper
+    x = tf.transpose(x, [0, 3, 1, 2])
+    N, C, H, W = x.get_shape().as_list()
+    G = min(G, C)
+    x = tf.reshape(x, [-1, G, C // G, H, W])
+    mean, var = tf.nn.moments(x, [2, 3, 4], keep_dims=True)
+    x = (x - mean) / tf.sqrt(var + esp)
+    # per channel gamma and beta
+    gamma = tf.Variable(tf.constant(1.0, shape=[C]), dtype=tf.float32, name='gamma')
+    beta = tf.Variable(tf.constant(0.0, shape=[C]), dtype=tf.float32, name='beta')
+    gamma = tf.reshape(gamma, [1, C, 1, 1])
+    beta = tf.reshape(beta, [1, C, 1, 1])
+
+    output = tf.reshape(x, [-1, C, H, W]) * gamma + beta
+    # tranpose: [bs, c, h, w, c] to [bs, h, w, c] following the paper
+    output = tf.transpose(output, [0, 2, 3, 1])
+    return output
+
 
 if __name__ == '__main__':
-    input = tf.placeholder(shape=[None, 511, 511, 3], dtype=tf.float32)
+    input = tf.placeholder(shape=[2, 511, 511, 3], dtype=tf.float32)
     feats = hourglass(input, is_training=True)
     print('Total trainable parameters:%s' %
                 str(np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])))
