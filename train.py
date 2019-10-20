@@ -92,7 +92,8 @@ if __name__ == '__main__':
             'pascalvoc_2012', 'train', './datasets/voc2012_tfrecord/')
 
         img, labels, bboxes = prepare_data_train(dataset, num_readers=4, batch_size=FLAGS.batch_size, shuffle=True)
-        batch_img, batch_labels, batch_bboxes = tf.train.batch([img, labels-1, bboxes], batch_size=FLAGS.batch_size, num_threads=4, capacity=FLAGS.batch_size*5, dynamic_pad=True)
+        batch_img, batch_labels, batch_bboxes = tf.train.batch([img, labels-1, bboxes], batch_size=FLAGS.batch_size,
+                                                               num_threads=4, capacity=FLAGS.batch_size*5, dynamic_pad=True)
 
     net = redudant_point_network(input=batch_img, is_training=True, n_class=config.n_class)
     hm_preds, emb_preds, offset_preds = net.get_output()
