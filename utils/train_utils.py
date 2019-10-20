@@ -84,7 +84,7 @@ def loss_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs):
     offset_loss = offset_loss_for_one_img(offset_pairs, points_mask)
     # tf.summary.scalar('offset_loss', offset_loss)
 
-    return pos_hm_loss + neg_hm_loss + 0.1*embedding_loss + offset_loss
+    return pos_hm_loss + neg_hm_loss/30. + 0.1*embedding_loss + offset_loss
 
 
 def offset_loss_for_one_img(offset_pairs, points_mask):
@@ -179,10 +179,11 @@ def hm_neg_loss_for_one_img(hm_preds, hm_gts):
         neg_mask = tf.cast(tf.less(hm_gt, 1.), tf.float32)
         hm_pred = tf.squeeze(hm_pred)
         hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
-        neg_pred = tf.clip_by_value(1. - hm_pred*neg_mask, 1e-10, 1.)
-        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(neg_pred))
+        # neg_pred = tf.clip_by_value(1. - hm_pred, 1e-10, 1.)
+        neg_pred = 1. - hm_pred
+        neg_loss.append(-tf.pow(1. - hm_gt, config.focal_loss_belta)*tf.pow(hm_pred, config.focal_loss_alpha)*tf.log(neg_pred)*neg_mask)
 
-    neg_loss = tf.reduce_mean(tf.stack(neg_loss, axis=0))
+    neg_loss = tf.reduce_sum(tf.stack(neg_loss, axis=0))
     return neg_loss
 
 
@@ -259,7 +260,7 @@ def encode_for_one_img(hm_preds, emb_preds, offset_preds, bboxes, class_indexs, 
     return hm_gts, embedding_pairs, offset_pairs, points_mask
 
 
-def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, radius_radio=6):
+def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, radius_radio=3):
     """encode for one bbox
     Args:
         hm_pred: a list of heat map prediction, each elemt with a shape [1, 128, 128, n_class]
@@ -274,9 +275,12 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
         a list of mask, each with a shape (1,), represents whether a key point is be selective.
     """
     ## heat map ground truth
-    bbox_min_len = tf.cast(tf.minimum((bbox[2] - bbox[0]) * config.hm_size[0] / radius_radio,
-                                      (bbox[3] - bbox[1]) * config.hm_size[1] / radius_radio), tf.int32)
-    consider_radius = tf.maximum(bbox_min_len, config.min_radius_for_feedback_cal)
+    # bbox_min_len = tf.cast(tf.minimum((bbox[2] - bbox[0]) * config.hm_size[0] / radius_radio,
+    #                                   (bbox[3] - bbox[1]) * config.hm_size[1] / radius_radio), tf.int32)
+    # consider_radius = tf.maximum(bbox_min_len, config.min_radius_for_feedback_cal)
+    det_size = tf.stack([bbox[2]-bbox[0], bbox[3]-bbox[1]], axis=0)*config.hm_size
+    consider_radius = gaussian_radius(det_size, min_overlap=0.7)
+    consider_radius = tf.maximum(consider_radius, config.min_radius_for_feedback_cal)
 
     ## points in x, y cordinate
     ones = tf.ones(shape=(config.hm_size[0], config.hm_size[1], config.n_class))
@@ -284,28 +288,28 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
 
     left_top = tf.stack([bbox[1], bbox[0]], axis=0) * config.hm_size[::-1]
     left_top_int = tf.cast(left_top, tf.int32)  ## xy cord
-    lt_hm_gt = heat_map_tf(config.hm_size, left_top_int, consider_radius)
+    lt_hm_gt = heat_map_tf(config.hm_size, left_top_int, consider_radius/radius_radio)
     lt_hm_gt = tf.expand_dims(lt_hm_gt, dim=-1) * ones * class_one_hot
 
     right_top = tf.stack([bbox[3], bbox[0]], axis=0) * config.hm_size[::-1]
     right_top_int = tf.cast(right_top, tf.int32)  ## xy cord
-    rt_hm_gt = heat_map_tf(config.hm_size, right_top_int, consider_radius)
+    rt_hm_gt = heat_map_tf(config.hm_size, right_top_int, consider_radius/radius_radio)
     rt_hm_gt = tf.expand_dims(rt_hm_gt, dim=-1) * ones * class_one_hot
 
 
     left_bottom = tf.stack([bbox[1], bbox[2]], axis=0) * config.hm_size[::-1]
     left_bottom_int = tf.cast(left_bottom, tf.int32)  ## xy cord
-    lb_hm_gt = heat_map_tf(config.hm_size, left_bottom_int, consider_radius)
+    lb_hm_gt = heat_map_tf(config.hm_size, left_bottom_int, consider_radius/radius_radio)
     lb_hm_gt = tf.expand_dims(lb_hm_gt, dim=-1) * ones * class_one_hot
 
     right_bottom = tf.stack([bbox[3], bbox[2]], axis=0) * config.hm_size[::-1]
     right_bottom_int = tf.cast(right_bottom, tf.int32)  ## xy cord
-    rb_hm_gt = heat_map_tf(config.hm_size, right_bottom_int, consider_radius)
+    rb_hm_gt = heat_map_tf(config.hm_size, right_bottom_int, consider_radius/radius_radio)
     rb_hm_gt = tf.expand_dims(rb_hm_gt, dim=-1) * ones * class_one_hot
 
     center = tf.stack([(bbox[1] + bbox[3]) / 2., (bbox[0] + bbox[2]) / 2.], axis=0)  * config.hm_size[::-1]
     center_int = tf.cast(center, tf.int32)  ## xy cord
-    c_hm_gt = heat_map_tf(config.hm_size, center_int, consider_radius)
+    c_hm_gt = heat_map_tf(config.hm_size, center_int, consider_radius/radius_radio)
     c_hm_gt = tf.expand_dims(c_hm_gt, dim=-1) * ones * class_one_hot
 
     hm_gts = [lt_hm_gt, rt_hm_gt, lb_hm_gt, rb_hm_gt, c_hm_gt]
@@ -431,16 +435,17 @@ def get_feedback_hm_loss_for_one_bbox(hm_preds, hm_gts, bbox, class_index, consi
         size_x = tf.minimum(consider_radius + x_index - x_begin, config.hm_size[1] - x_begin)
         consider_range_pred = tf.squeeze(tf.slice(hm_pred, begin=(0, y_begin, x_begin, tf.cast(class_index, tf.int32)), size=(1, size_y, size_x, 1)), axis=[0,3])
 
-        pos_pred = tf.clip_by_value(pos_pred, 1e-10, 1.)
-        pos_loss = -tf.pow(1 - pos_pred, config.focal_loss_alpha)*tf.log(pos_pred)
+        # pos_pred = tf.clip_by_value(pos_pred, 1e-10, 1.)
+        pos_loss = -tf.pow(1. - pos_pred, config.focal_loss_alpha)*tf.log(pos_pred)
 
         hm_gt = tf.transpose(hm_gt, perm=[2, 0, 1])
         hm_gt = tf.gather_nd(hm_gt, [class_index])
         consider_range_gt = tf.slice(hm_gt, begin=(y_begin, x_begin), size=(size_y, size_x))
         neg_mask = tf.cast(tf.less(consider_range_gt, 1.), tf.float32)
-        consider_range_pred = tf.clip_by_value(consider_range_pred, 1e-10, 1.)
-        neg_pred = tf.clip_by_value(1. - consider_range_pred*neg_mask, 1e-10, 1.)
-        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(neg_pred)
+        # consider_range_pred = tf.clip_by_value(consider_range_pred, 1e-10, 1.)
+        # neg_pred = tf.clip_by_value(1. - consider_range_pred, 1e-10, 1.)
+        neg_pred = 1. - consider_range_pred
+        neg_loss = -tf.pow(1. - consider_range_gt, config.focal_loss_belta)*tf.pow(consider_range_pred, config.focal_loss_alpha)*tf.log(neg_pred)*neg_mask
         neg_loss = tf.reduce_mean(neg_loss)
 
         return pos_loss + neg_loss
@@ -480,6 +485,31 @@ def get_feedback_hm_loss_for_one_bbox(hm_preds, hm_gts, bbox, class_index, consi
     group_6 = center_loss + right_bottom_loss
     return tf.stack([group_1, group_2, group_3, group_4, group_5, group_6], axis=0)
 
+
+def gaussian_radius(det_size, min_overlap=0.7):
+    height = det_size[0]
+    width = det_size[1]
+
+    a1 = 1.
+    b1 = (height + width)
+    c1 = width * height * (1. - min_overlap) / (1. + min_overlap)
+    sq1 = tf.sqrt(tf.square(b1) - 4. * a1 * c1)
+    r1 = (b1 + sq1) / 2.
+
+    a2 = 4.
+    b2 = 2. * (height + width)
+    c2 = (1. - min_overlap) * width * height
+    sq2 = tf.sqrt(tf.square(b2) - 4. * a2 * c2)
+    r2 = (b2 + sq2) / 2.
+
+    a3 = 4. * min_overlap
+    b3 = -2. * min_overlap * (height + width)
+    c3 = (min_overlap - 1.) * width * height
+    sq3 = tf.sqrt(tf.square(b3) - 4. * a3 * c3)
+    r3 = (b3 + sq3) / 2.
+
+    r = tf.stack([r1, r2, r3], axis=0)
+    return tf.cast(tf.reduce_min(r), tf.int32)
 
 if __name__ == '__main__':
     ## test-1 for get_feedback_hm_loss_for_each_bbox
