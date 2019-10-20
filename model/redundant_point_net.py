@@ -12,6 +12,8 @@ from model.backbone.hourglass import hourglass
 from model.corner_pooling_utils import *
 from model.backbone.hourglass import *
 
+slim = tf.contrib.slim
+
 cornet_pooling_utils = {'top_pooling': top_pooling, 'right_pooling': right_pooling,
                         'bottom_pooling': bottom_pooling, 'left_pooling': left_pooling}
 
@@ -40,7 +42,7 @@ class redudant_point_network():
         ## center prediction
         self.c_heat, self.c_embeds, self.c_offset = self.prediction_module(hourglass_feat, is_training, scope='center')
 
-        self.output = [[self.tl_heat, self.tr_heat, self.bl_heat, self.br_heat, self.c_heat],
+        self.output = [[slim.softmax(self.tl_heat), slim.softmax(self.tr_heat), slim.softmax(self.bl_heat), slim.softmax(self.br_heat), slim.softmax(self.c_heat)],
                   [self.tl_embeds, self.tr_embeds, self.bl_embeds, self.br_embeds, self.c_embeds],
                   [self.tl_offset, self.tr_offset, self.bl_offset, self.br_offset, self.c_offset]]
     def get_output(self):
