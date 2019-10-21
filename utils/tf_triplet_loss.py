@@ -207,9 +207,9 @@ def triplet_semihard_loss(labels, embeddings, margin=1.0):
 
   loss_mat = math_ops.add(margin, pdist_matrix - semi_hard_negatives)
 #####summary#######
-  tf.summary.scalar("negatives_inside", tf.reduce_mean(negatives_inside))
-  tf.summary.scalar("negatives_outside", tf.reduce_mean(negatives_outside))
-  tf.summary.scalar("semi_hard_negatives", tf.reduce_mean(semi_hard_negatives))
+  # tf.summary.scalar("negatives_inside", tf.reduce_mean(negatives_inside))
+  # tf.summary.scalar("negatives_outside", tf.reduce_mean(negatives_outside))
+  # tf.summary.scalar("semi_hard_negatives", tf.reduce_mean(semi_hard_negatives))
 ##########
   mask_positives = math_ops.cast(
       adjacency, dtype=dtypes.float32) - array_ops.diag(
