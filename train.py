@@ -100,7 +100,7 @@ if __name__ == '__main__':
 
     loss = loss_for_batch(hm_preds, emb_preds, offset_preds, batch_bboxes, batch_labels)
     update_op = build_optimizer(loss)
-    # merge_op = tf.summary.merge_all()
+    merge_op = tf.summary.merge_all()
 
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=5)
     init = tf.global_variables_initializer()
@@ -129,7 +129,7 @@ if __name__ == '__main__':
         sess.run(init)
         avg_loss = 0.
         while (True):
-            op, loss_local, current_step = sess.run([update_op, loss, global_step])
+            op, mp, loss_local, current_step = sess.run([update_op, merge_op, loss, global_step])
 
             if FLAGS.f_log_step != None:
                 ## caculate average loss ##
@@ -143,7 +143,7 @@ if __name__ == '__main__':
             if FLAGS.f_summary_step != None:
                 if current_step % FLAGS.f_summary_step == FLAGS.f_summary_step - 1:
                     ## summary ##
-                    # writer.add_summary(mp, current_step)
+                    writer.add_summary(mp, current_step)
                     pass
 
             if FLAGS.f_save_step != None:
