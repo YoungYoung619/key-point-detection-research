@@ -157,7 +157,7 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
         a list of offset pair for 5 different key points, each with shape (2,), [offset_preds, offset_gt]
         a list of mask, each with a shape (1,), represents whether a key point is be selective.
     """
-    bbox = tf.gather(bboxes, index)
+    bbox = tf.squeeze(tf.gather(bboxes, [index]))
     class_index = tf.gather(class_indexs, [index])
 
     ## points in x, y cordinate
@@ -165,13 +165,13 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
     left_top_int = tf.cast(left_top, tf.int32)  ## xy cord
 
     right_top = tf.stack([bbox[3], bbox[0]], axis=0) * config.hm_size[::-1]
-    right_top_int = tf.cast(right_top, tf.int32)  ## xy cord
+    right_top_int = tf.minimum(tf.cast(right_top, tf.int32), config.hm_size[0]-1)  ## xy cord
 
     left_bottom = tf.stack([bbox[1], bbox[2]], axis=0) * config.hm_size[::-1]
-    left_bottom_int = tf.cast(left_bottom, tf.int32)  ## xy cord
+    left_bottom_int = tf.minimum(tf.cast(left_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
 
     right_bottom = tf.stack([bbox[3], bbox[2]], axis=0) * config.hm_size[::-1]
-    right_bottom_int = tf.cast(right_bottom, tf.int32)  ## xy cord
+    right_bottom_int = tf.minimum(tf.cast(right_bottom, tf.int32), config.hm_size[0]-1) ## xy cord
 
     center = tf.stack([(bbox[1] + bbox[3]) / 2., (bbox[0] + bbox[2]) / 2.], axis=0) * config.hm_size[::-1]
     center_int = tf.cast(center, tf.int32)  ## xy cord
@@ -187,6 +187,53 @@ def hm_pos_loss_for_one_bbox(hm_preds, points_mask, bboxes, class_indexs, index)
             pos_hm_loss.append(-tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred) * point_mask)
         pos_hm_loss = tf.concat(pos_hm_loss, axis=0)
         pos_hm_loss = tf.reduce_sum(pos_hm_loss)
+
+    return pos_hm_loss
+
+def hm_pos_loss_for_one_bbox_(hm_gts, points_mask, bboxes, class_indexs, index):
+    """ pos relative loss calculation for one box
+    Args:
+        hm_gts: a list of heat map gt, each elemt with a shape [128, 128, n_class]
+        points_mask: a list of mask, each elemt with a shape (n_bboxes, ), denotes whether a key point is a pos
+        bbox: ground truth bbox, [ymin, xmin, ymax, xmax], with a shape (n_bboxes, 4)
+        class_index: class index, with a shape (n_bboxes,)
+        index: indicate which bbox to be calculated
+    Return:
+        a list of heat map ground truth, each elemt with a shape [[1, 128, 128, n_class]]
+        a tensor represents embedding pair, [key_point_1_embeding, key_point_2_embeding]
+        a list of offset pair for 5 different key points, each with shape (2,), [offset_preds, offset_gt]
+        a list of mask, each with a shape (1,), represents whether a key point is be selective.
+    """
+    bbox = tf.squeeze(tf.gather(bboxes, [index]))
+    class_index = tf.gather(class_indexs, [index])
+
+    ## points in x, y cordinate
+    left_top = tf.stack([bbox[1], bbox[0]], axis=0) * config.hm_size[::-1]
+    left_top_int = tf.cast(left_top, tf.int32) ## xy cord
+
+    right_top = tf.stack([bbox[3], bbox[0]], axis=0) * config.hm_size[::-1]
+    right_top_int = tf.minimum(tf.cast(right_top, tf.int32), config.hm_size[0]-1)  ## xy cord
+
+    left_bottom = tf.stack([bbox[1], bbox[2]], axis=0) * config.hm_size[::-1]
+    left_bottom_int = tf.minimum(tf.cast(left_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
+
+    right_bottom = tf.stack([bbox[3], bbox[2]], axis=0) * config.hm_size[::-1]
+    right_bottom_int = tf.minimum(tf.cast(right_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
+
+    center = tf.stack([(bbox[1] + bbox[3]) / 2., (bbox[0] + bbox[2]) / 2.], axis=0) * config.hm_size[::-1]
+    center_int = tf.cast(center, tf.int32)  ## xy cord
+
+    points_cord = [left_top_int, right_top_int, left_bottom_int, right_bottom_int, center_int] ## in x, y cord
+
+    with tf.name_scope('pos_hm_loss'):
+        pos_hm_loss = []
+        for hm_pred, point_mask, point_cord in zip(hm_gts, points_mask, points_cord):
+            hm_pred = tf.gather_nd(hm_pred, [[point_cord[1], point_cord[0], tf.cast(class_index[0], tf.int32)]])
+            point_mask = tf.gather(point_mask, [index])
+            hm_pred = tf.clip_by_value(hm_pred, 1e-10, 1.)
+            pos_hm_loss.append(-tf.pow((1.-hm_pred), config.focal_loss_alpha) * tf.log(hm_pred))
+        pos_hm_loss = tf.concat(pos_hm_loss, axis=0)
+        # pos_hm_loss = tf.reduce_sum(pos_hm_loss)
 
     return pos_hm_loss
 
@@ -311,18 +358,18 @@ def encode_for_one_bbox_(hm_preds, emb_preds, offset_preds, bbox, class_index, r
     lt_hm_gt = tf.expand_dims(lt_hm_gt, dim=-1) * ones * class_one_hot
 
     right_top = tf.stack([bbox[3], bbox[0]], axis=0) * config.hm_size[::-1]
-    right_top_int = tf.cast(right_top, tf.int32)  ## xy cord
+    right_top_int = tf.minimum(tf.cast(right_top, tf.int32), config.hm_size[0]-1) ## xy cord
     rt_hm_gt = heat_map_tf(config.hm_size, right_top_int, consider_radius/radius_radio)
     rt_hm_gt = tf.expand_dims(rt_hm_gt, dim=-1) * ones * class_one_hot
 
 
     left_bottom = tf.stack([bbox[1], bbox[2]], axis=0) * config.hm_size[::-1]
-    left_bottom_int = tf.cast(left_bottom, tf.int32)  ## xy cord
+    left_bottom_int =tf.minimum( tf.cast(left_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
     lb_hm_gt = heat_map_tf(config.hm_size, left_bottom_int, consider_radius/radius_radio)
     lb_hm_gt = tf.expand_dims(lb_hm_gt, dim=-1) * ones * class_one_hot
 
     right_bottom = tf.stack([bbox[3], bbox[2]], axis=0) * config.hm_size[::-1]
-    right_bottom_int = tf.cast(right_bottom, tf.int32)  ## xy cord
+    right_bottom_int = tf.minimum(tf.cast(right_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
     rb_hm_gt = heat_map_tf(config.hm_size, right_bottom_int, consider_radius/radius_radio)
     rb_hm_gt = tf.expand_dims(rb_hm_gt, dim=-1) * ones * class_one_hot
 
@@ -430,18 +477,18 @@ def encode_for_one_bbox(hm_preds, emb_preds, offset_preds, bbox, class_index, ra
     lt_hm_gt = tf.expand_dims(lt_hm_gt, dim=-1) * ones * class_one_hot
 
     right_top = tf.stack([bbox[3], bbox[0]], axis=0) * config.hm_size[::-1]
-    right_top_int = tf.cast(right_top, tf.int32)  ## xy cord
+    right_top_int = tf.minimum(tf.cast(right_top, tf.int32), config.hm_size[0]-1)  ## xy cord
     rt_hm_gt = heat_map_tf(config.hm_size, right_top_int, consider_radius/radius_radio)
     rt_hm_gt = tf.expand_dims(rt_hm_gt, dim=-1) * ones * class_one_hot
 
 
     left_bottom = tf.stack([bbox[1], bbox[2]], axis=0) * config.hm_size[::-1]
-    left_bottom_int = tf.cast(left_bottom, tf.int32)  ## xy cord
+    left_bottom_int = tf.minimum(tf.cast(left_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
     lb_hm_gt = heat_map_tf(config.hm_size, left_bottom_int, consider_radius/radius_radio)
     lb_hm_gt = tf.expand_dims(lb_hm_gt, dim=-1) * ones * class_one_hot
 
     right_bottom = tf.stack([bbox[3], bbox[2]], axis=0) * config.hm_size[::-1]
-    right_bottom_int = tf.cast(right_bottom, tf.int32)  ## xy cord
+    right_bottom_int = tf.minimum(tf.cast(right_bottom, tf.int32), config.hm_size[0]-1)  ## xy cord
     rb_hm_gt = heat_map_tf(config.hm_size, right_bottom_int, consider_radius/radius_radio)
     rb_hm_gt = tf.expand_dims(rb_hm_gt, dim=-1) * ones * class_one_hot
 
